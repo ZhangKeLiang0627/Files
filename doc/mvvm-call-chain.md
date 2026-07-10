@@ -130,28 +130,11 @@ void BrowserView::onEnter(lv_obj_t* parent)
 }
 ```
 
-> 你可能会问：observe 注册时已经回调了一次，为什么还要手动渲染？
-> 因为控件是在 observe 之后才创建的，observe 回调触发时控件还不存在。所以先 observe（存入回调指针），**再手动渲染**（实际更新控件）。
-> 但等一下——其实 observe 注册时就调了 callback，只是 callback 里有 `if (_path_label)` 这种判空保护，不会崩溃而已。
-
-实际上追踪 observe 的实现：
-
-```cpp
-// single_observable.hpp:50-55
-void observe(void* context, OnChangedCallback callback) {
-    _context  = context;
-    _callback = callback;
-    notify();              // ← 立即调用回调
-}
-
-void notify() {
-    if (_callback) {
-        _callback(_context, _value);  // 但此时 _path_label 还没创建
-    }
-}
-```
-
-所以答案：observe 注册时的回调执行了，但因为控件还没创建（`_path_label` 是 nullptr），回调里的 `if` 保护直接 return。后续的显式 `renderXxx()` 才是真正渲染的那次。
+> 第 2 步的 `observe()` 注册后立即回调，会执行 `renderXxx()`；第 3 步又手动调了一次 `renderXxx()`。
+>
+> **所以第 3 步是冗余的**——但无害，因为 `renderDirectory`、`renderEntries` 等方法都是幂等的。从语义上看，observe 回调是"值变化了通知我"，而 onEnter 末尾的显式调用是"进入页面时初始化一次"，重复但意图清晰。
+>
+> 按 ponytail 精神可以删掉第 3 步，但保留也不影响功能。这份代码选择保留，大概是为了强调"进入页面时状态必须同步"的意图，同时 observe 回调的职责更纯粹（只处理变更通知）。
 
 ---
 
