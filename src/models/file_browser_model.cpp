@@ -1,6 +1,7 @@
 #include "models/file_browser_model.hpp"
 
 #include "core/files_config.hpp"
+#include "models/filesystem_transfer.hpp"
 #include <spdlog/spdlog.h>
 #include <algorithm>
 #include <chrono>
@@ -53,6 +54,13 @@ const FileEntry* FileBrowserModel::selectedEntry() const
     return &list[static_cast<size_t>(index)];
 }
 
+FileEntry FileBrowserModel::entryWithMetadata(const FileEntry& entry) const
+{
+    std::error_code ec;
+    const fs::directory_entry item(entry.path, ec);
+    return ec ? entry : makeEntry(item, true);
+}
+
 void FileBrowserModel::refresh(bool preserveSelected)
 {
     const FileEntry* selected       = selectedEntry();
@@ -67,7 +75,7 @@ void FileBrowserModel::refreshSelecting(const std::string& preferredPath)
 
     for (const auto& item :
          fs::directory_iterator(_current_directory.get(), fs::directory_options::skip_permission_denied, ec)) {
-        list.push_back(makeEntry(pathString(item.path())));
+        list.push_back(makeEntry(item, false));
     }
 
     if (ec) {
@@ -128,7 +136,7 @@ FileOperationResult FileBrowserModel::openSelected(FileEntry* openedFile)
     }
 
     if (openedFile) {
-        *openedFile = *selected;
+        *openedFile = entryWithMetadata(*selected);
     }
     return FileOperationResult{};
 }
@@ -176,31 +184,20 @@ FileOperationResult FileBrowserModel::goToDirectory(const std::string& path, boo
 
 FileOperationResult FileBrowserModel::copyEntryTo(const FileEntry& entry, const std::string& destinationDirectory)
 {
-    std::error_code ec;
-    fs::path destination = fs::path(destinationDirectory) / entry.name;
-    if (pathString(destination) == entry.path) {
-        const fs::path stem      = destination.stem();
-        const fs::path extension = destination.extension();
-        destination              = destination.parent_path() / (stem.string() + " copy" + extension.string());
-        int index                = 2;
-        while (fs::exists(destination, ec)) {
-            destination =
-                destination.parent_path() / (stem.string() + " copy " + std::to_string(index) + extension.string());
-            ++index;
-        }
+    const fs::path source(entry.path);
+    const std::string sourceName = entry.name;
+    const internal::FilesystemTransferResult transfer =
+        internal::copyPathToDirectory(source, fs::path(destinationDirectory));
+    if (!transfer) {
+        spdlog::warn("FileBrowserModel: copy failed source='{}' directory='{}' reason={} detail={}", source.string(),
+                     destinationDirectory, internal::filesystemTransferFailureName(transfer.failure), transfer.detail);
+        return errorResult(FileOperationStatus::Failed, "Copy failed: " + transfer.detail);
     }
 
-    if (entry.directory) {
-        fs::copy(entry.path, destination, fs::copy_options::recursive | fs::copy_options::skip_existing, ec);
-    } else {
-        fs::copy_file(entry.path, destination, fs::copy_options::skip_existing, ec);
-    }
-
-    if (ec) {
-        return errorResult(FileOperationStatus::Failed, "Copy failed: " + ec.message());
-    }
     refresh(false);
-    _status.set("Copied " + entry.name);
+    _status.set("Copied " + sourceName);
+    spdlog::info("FileBrowserModel: copied source='{}' destination='{}'", source.string(),
+                 transfer.destination.string());
     return FileOperationResult{};
 }
 
@@ -216,37 +213,23 @@ FileOperationResult FileBrowserModel::copySelectedTo(const std::string& destinat
 
 FileOperationResult FileBrowserModel::moveEntryTo(const FileEntry& entry, const std::string& destinationDirectory)
 {
-    std::error_code ec;
     const fs::path source(entry.path);
-    const fs::path destination = fs::path(destinationDirectory) / entry.name;
-    if (pathString(destination) == entry.path) {
+    const std::string sourceName = entry.name;
+    const internal::FilesystemTransferResult transfer =
+        internal::movePathToDirectory(source, fs::path(destinationDirectory));
+    if (transfer.failure == internal::FilesystemTransferFailure::SamePath) {
         return errorResult(FileOperationStatus::InvalidSelection, "Already here");
     }
-    if (fs::exists(destination, ec)) {
-        return errorResult(FileOperationStatus::Failed, "Name already exists");
-    }
-
-    fs::rename(source, destination, ec);
-    if (ec) {
-        if (entry.directory) {
-            fs::copy(entry.path, destination, fs::copy_options::recursive | fs::copy_options::skip_existing, ec);
-            if (!ec) {
-                fs::remove_all(source, ec);
-            }
-        } else {
-            fs::copy_file(entry.path, destination, fs::copy_options::skip_existing, ec);
-            if (!ec) {
-                fs::remove(source, ec);
-            }
-        }
-    }
-
-    if (ec) {
-        return errorResult(FileOperationStatus::Failed, "Cut failed: " + ec.message());
+    if (!transfer) {
+        spdlog::warn("FileBrowserModel: move failed source='{}' directory='{}' reason={} detail={}", source.string(),
+                     destinationDirectory, internal::filesystemTransferFailureName(transfer.failure), transfer.detail);
+        return errorResult(FileOperationStatus::Failed, "Cut failed: " + transfer.detail);
     }
 
     refresh(false);
-    _status.set("Moved " + entry.name);
+    _status.set("Moved " + sourceName);
+    spdlog::info("FileBrowserModel: moved source='{}' destination='{}'", source.string(),
+                 transfer.destination.string());
     return FileOperationResult{};
 }
 
@@ -301,16 +284,16 @@ FileOperationResult FileBrowserModel::deleteSelected()
     return FileOperationResult{};
 }
 
-FileEntry FileBrowserModel::makeEntry(const std::string& path) const
+FileEntry FileBrowserModel::makeEntry(const fs::directory_entry& item, bool includeMetadata) const
 {
     std::error_code ec;
-    fs::directory_entry item(path, ec);
-    fs::path fsPath(path);
-    const bool directory        = !ec && item.is_directory(ec);
+    const fs::path fsPath       = item.path();
+    const bool directory        = item.is_directory(ec);
     const std::string extension = directory ? "" : normalizedExtension(fsPath.extension().string());
 
     uint64_t size = 0;
-    if (!directory) {
+    if (includeMetadata && !directory) {
+        ec.clear();
         size = static_cast<uint64_t>(item.file_size(ec));
         if (ec) {
             size = 0;
@@ -325,7 +308,7 @@ FileEntry FileBrowserModel::makeEntry(const std::string& path) const
     entry.kind            = directory ? FileKind::Directory : _file_types.kindForExtension(extension);
     entry.icon            = _file_types.iconFor(entry);
     entry.size            = size;
-    entry.modifiedUnixSec = modifiedUnixSec(item);
+    entry.modifiedUnixSec = includeMetadata ? modifiedUnixSec(item) : 0;
     entry.hidden          = !entry.name.empty() && entry.name.front() == '.';
     entry.readable        = true;
     entry.writable        = true;

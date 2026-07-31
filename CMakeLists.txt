@@ -1,10 +1,13 @@
 cmake_minimum_required(VERSION 3.16)
 
-project(M5CardputerZeroFiles VERSION 0.1.1 LANGUAGES C CXX ASM)
+project(M5CardputerZeroFiles VERSION 0.1.4 LANGUAGES C CXX ASM)
 
 option(FILES_USE_SDL "Use LVGL's SDL backend for desktop testing" ON)
 option(FILES_CONVERT_ASSETS "Convert image assets during CMake configure" ON)
+option(BUILD_TESTING "Build Files tests" OFF)
 set(FILES_BIN_NAME "M5CardputerZero-Files" CACHE STRING "Output executable name")
+
+include(CTest)
 
 if(APPLE AND NOT FILES_USE_SDL)
     message(FATAL_ERROR "macOS builds only support FILES_USE_SDL=ON.")
@@ -177,6 +180,7 @@ target_include_directories(${FILES_BIN_NAME} PRIVATE
     "${FILES_SRC_DIR}"
     "${FILES_SRC_DIR}/assets"
     "${FILES_MINIAUDIO_DIR}"
+    "${FILES_LVGL_DIR}/src/libs/tjpgd"
 )
 
 target_compile_definitions(${FILES_BIN_NAME} PRIVATE
@@ -196,3 +200,40 @@ target_link_libraries(${FILES_BIN_NAME} PRIVATE
 set_target_properties(${FILES_BIN_NAME} PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${FILES_ROOT}/dist"
 )
+
+if(BUILD_TESTING)
+    add_executable(filesystem_transfer_tests
+        tests/filesystem_transfer_test.cpp
+        src/models/filesystem_transfer.cpp
+    )
+    target_include_directories(filesystem_transfer_tests PRIVATE
+        "${FILES_SRC_DIR}"
+    )
+    target_link_libraries(filesystem_transfer_tests PRIVATE
+        spdlog::spdlog
+        Threads::Threads
+    )
+    add_test(NAME filesystem_transfer COMMAND filesystem_transfer_tests)
+
+    add_executable(jpeg_decoder_tests
+        tests/jpeg_decoder_test.cpp
+        src/preview/image/jpeg_decoder.cpp
+    )
+    target_include_directories(jpeg_decoder_tests PRIVATE
+        "${FILES_SRC_DIR}"
+        "${FILES_LVGL_DIR}/src/libs/tjpgd"
+    )
+    target_compile_definitions(jpeg_decoder_tests PRIVATE
+        FILES_TEST_JPEG_PATH="${FILES_LVGL_DIR}/examples/libs/tjpgd/img_lvgl_logo.jpg"
+        FILES_TEST_MISSING_JPEG_PATH="${CMAKE_CURRENT_BINARY_DIR}/missing-image.jpg"
+        FILES_TEST_INVALID_JPEG_PATH="${CMAKE_CURRENT_BINARY_DIR}/invalid-image.jpg"
+    )
+    target_link_libraries(jpeg_decoder_tests PRIVATE
+        lvgl::lvgl
+        spdlog::spdlog
+        Threads::Threads
+        ${FILES_SDL_LIBS}
+        ${FILES_SYSTEM_LIBS}
+    )
+    add_test(NAME jpeg_decoder COMMAND jpeg_decoder_tests)
+endif()
