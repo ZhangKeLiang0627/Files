@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.16)
 
-project(M5CardputerZeroFiles VERSION 0.1.4 LANGUAGES C CXX ASM)
+project(M5CardputerZeroFiles VERSION 0.1.7 LANGUAGES C CXX ASM)
 
 option(FILES_USE_SDL "Use LVGL's SDL backend for desktop testing" ON)
 option(FILES_CONVERT_ASSETS "Convert image assets during CMake configure" ON)
@@ -202,6 +202,15 @@ set_target_properties(${FILES_BIN_NAME} PROPERTIES
 )
 
 if(BUILD_TESTING)
+    add_executable(cardputer_keymap_tests
+        tests/cardputer_keymap_test.cpp
+        src/input/cardputer_keymap.cpp
+    )
+    target_include_directories(cardputer_keymap_tests PRIVATE
+        "${FILES_SRC_DIR}"
+    )
+    add_test(NAME cardputer_keymap COMMAND cardputer_keymap_tests)
+
     add_executable(filesystem_transfer_tests
         tests/filesystem_transfer_test.cpp
         src/models/filesystem_transfer.cpp
@@ -217,6 +226,7 @@ if(BUILD_TESTING)
 
     add_executable(jpeg_decoder_tests
         tests/jpeg_decoder_test.cpp
+        src/preview/image/draw_buffer.cpp
         src/preview/image/jpeg_decoder.cpp
     )
     target_include_directories(jpeg_decoder_tests PRIVATE
@@ -236,4 +246,21 @@ if(BUILD_TESTING)
         ${FILES_SYSTEM_LIBS}
     )
     add_test(NAME jpeg_decoder COMMAND jpeg_decoder_tests)
+
+    add_executable(bmp_decoder_tests
+        tests/bmp_decoder_test.cpp
+        src/preview/image/bmp_decoder.cpp
+        src/preview/image/draw_buffer.cpp
+    )
+    target_include_directories(bmp_decoder_tests PRIVATE
+        "${FILES_SRC_DIR}"
+    )
+    target_link_libraries(bmp_decoder_tests PRIVATE
+        lvgl::lvgl
+        spdlog::spdlog
+        Threads::Threads
+        ${FILES_SDL_LIBS}
+        ${FILES_SYSTEM_LIBS}
+    )
+    add_test(NAME bmp_decoder COMMAND bmp_decoder_tests)
 endif()
